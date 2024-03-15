@@ -1,22 +1,26 @@
-import * as React from 'react';
-import {
-  AriaAttributes,
-  Component,
-  FocusEventHandler,
-  FormEventHandler,
-  KeyboardEventHandler,
-  MouseEventHandler,
-  ReactNode,
-  RefCallback,
-  TouchEventHandler,
-} from 'react';
-import { MenuPlacer } from './components/Menu';
-import LiveRegion from './components/LiveRegion';
+// @flow
 
-import { createFilter, FilterOptionOption } from './filters';
-import { DummyInput, ScrollManager, RequiredInput } from './internal/index';
-import { AriaLiveMessages, AriaSelection } from './accessibility/index';
-import { isAppleDevice } from './accessibility/helpers';
+import React, { Component, type ElementRef, type Node } from 'react';
+import memoizeOne from 'memoize-one';
+import { MenuPlacer } from './components/Menu';
+import isEqual from './internal/react-fast-compare';
+
+import { createFilter } from './filters';
+import {
+  A11yText,
+  DummyInput,
+  ScrollBlock,
+  ScrollCaptor,
+} from './internal/index';
+import {
+  valueFocusAriaMessage,
+  optionFocusAriaMessage,
+  resultsAriaMessage,
+  valueEventAriaMessage,
+  instructionsAriaMessage,
+  type InstructionsContext,
+  type ValueEventContext,
+} from './accessibility/index';
 
 import {
   classNames,
@@ -26,279 +30,242 @@ import {
   noop,
   scrollIntoView,
   isDocumentElement,
-  notNullish,
-  valueTernary,
-  multiValueAsValue,
-  singleValueAsValue,
 } from './utils';
 
 import {
-  formatGroupLabel as formatGroupLabelBuiltin,
-  getOptionLabel as getOptionLabelBuiltin,
-  getOptionValue as getOptionValueBuiltin,
-  isOptionDisabled as isOptionDisabledBuiltin,
+  formatGroupLabel,
+  getOptionLabel,
+  getOptionValue,
+  isOptionDisabled,
 } from './builtins';
 
-import { defaultComponents, SelectComponentsConfig } from './components/index';
-
 import {
-  ClassNamesConfig,
-  defaultStyles,
-  StylesConfig,
-  StylesProps,
-} from './styles';
-import { defaultTheme, ThemeConfig } from './theme';
+  defaultComponents,
+  type PlaceholderOrValue,
+  type SelectComponents,
+  type SelectComponentsConfig,
+} from './components/index';
 
-import {
+import { defaultStyles, type StylesConfig } from './styles';
+import { defaultTheme, type ThemeConfig } from './theme';
+
+import type {
   ActionMeta,
+  ActionTypes,
   FocusDirection,
-  GetOptionLabel,
-  GetOptionValue,
-  GroupBase,
+  FocusEventHandler,
+  GroupType,
   InputActionMeta,
+  KeyboardEventHandler,
   MenuPlacement,
   MenuPosition,
-  OnChangeValue,
-  Options,
-  OptionsOrGroups,
-  PropsValue,
-  SetValueAction,
+  OptionsType,
+  OptionType,
+  ValueType,
 } from './types';
 
-export type FormatOptionLabelContext = 'menu' | 'value';
-export interface FormatOptionLabelMeta<Option> {
-  context: FormatOptionLabelContext;
-  inputValue: string;
-  selectValue: Options<Option>;
-}
+type MouseOrTouchEvent =
+  | SyntheticMouseEvent<HTMLElement>
+  | SyntheticTouchEvent<HTMLElement>;
+type FormatOptionLabelContext = 'menu' | 'value';
+type FormatOptionLabelMeta = {
+  context: FormatOptionLabelContext,
+  inputValue: string,
+  selectValue: ValueType,
+};
 
-export interface Props<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
-> {
-  /** HTML ID of an element containing an error message related to the input**/
-  'aria-errormessage'?: AriaAttributes['aria-errormessage'];
-  /** Indicate if the value entered in the field is invalid **/
-  'aria-invalid'?: AriaAttributes['aria-invalid'];
-  /** Aria label (for assistive tech) */
-  'aria-label'?: AriaAttributes['aria-label'];
-  /** HTML ID of an element that should be used as the label (for assistive tech) */
-  'aria-labelledby'?: AriaAttributes['aria-labelledby'];
-  /** Used to set the priority with which screen reader should treat updates to live regions. The possible settings are: off, polite (default) or assertive */
-  'aria-live'?: AriaAttributes['aria-live'];
-  /** Customise the messages used by the aria-live component */
-  ariaLiveMessages?: AriaLiveMessages<Option, IsMulti, Group>;
-  /** Focus the control when it is mounted */
-  autoFocus?: boolean;
-  /** Remove the currently focused option when the user presses backspace when Select isClearable or isMulti */
-  backspaceRemovesValue: boolean;
-  /** Remove focus from the input when the user selects an option (handy for dismissing the keyboard on touch devices) */
-  blurInputOnSelect: boolean;
-  /** When the user reaches the top/bottom of the menu, prevent scroll on the scroll-parent  */
-  captureMenuScroll: boolean;
-  /** Sets a className attribute on the outer component */
-  className?: string;
-  /**
-   * If provided, all inner components will be given a prefixed className attribute.
-   *
-   * This is useful when styling via CSS classes instead of the Styles API approach.
+export type Props = {
+  /* Aria label (for assistive tech) */
+  'aria-label'?: string,
+  /* HTML ID of an element that should be used as the label (for assistive tech) */
+  'aria-labelledby'?: string,
+  /* Focus the control when it is mounted */
+  autoFocus?: boolean,
+  /* Remove the currently focused option when the user presses backspace */
+  backspaceRemovesValue: boolean,
+  /* Remove focus from the input when the user selects an option (handy for dismissing the keyboard on touch devices) */
+  blurInputOnSelect: boolean,
+  /* When the user reaches the top/bottom of the menu, prevent scroll on the scroll-parent  */
+  captureMenuScroll: boolean,
+  /* Sets a className attribute on the outer component */
+  className?: string,
+  /*
+    If provided, all inner components will be given a prefixed className attribute.
+
+    This is useful when styling via CSS classes instead of the Styles API approach.
+  */
+  classNamePrefix?: string | null,
+  /* Close the select menu when the user selects an option */
+  closeMenuOnSelect: boolean,
+  /*
+    If `true`, close the select menu when the user scrolls the document/body.
+
+    If a function, takes a standard javascript `ScrollEvent` you return a boolean:
+
+    `true` => The menu closes
+
+    `false` => The menu stays open
+
+    This is useful when you have a scrollable modal and want to portal the menu out,
+    but want to avoid graphical issues.
    */
-  classNamePrefix?: string | null;
-  /**
-   * Provide classNames based on state for each inner component
-   */
-  classNames: ClassNamesConfig<Option, IsMulti, Group>;
-  /** Close the select menu when the user selects an option */
-  closeMenuOnSelect: boolean;
-  /**
-   * If `true`, close the select menu when the user scrolls the document/body.
-   *
-   * If a function, takes a standard javascript `ScrollEvent` you return a boolean:
-   *
-   * `true` => The menu closes
-   *
-   * `false` => The menu stays open
-   *
-   * This is useful when you have a scrollable modal and want to portal the menu out,
-   * but want to avoid graphical issues.
-   */
-  closeMenuOnScroll: boolean | ((event: Event) => boolean);
-  /**
-   * This complex object includes all the compositional components that are used
-   * in `react-select`. If you wish to overwrite a component, pass in an object
-   * with the appropriate namespace.
-   *
-   * If you only wish to restyle a component, we recommend using the `styles` prop
-   * instead. For a list of the components that can be passed in, and the shape
-   * that will be passed to them, see [the components docs](/components)
-   */
-  components: SelectComponentsConfig<Option, IsMulti, Group>;
-  /** Whether the value of the select, e.g. SingleValue, should be displayed in the control. */
-  controlShouldRenderValue: boolean;
-  /** Delimiter used to join multiple values into a single HTML Input value */
-  delimiter?: string;
-  /** Clear all values when the user presses escape AND the menu is closed */
-  escapeClearsValue: boolean;
-  /** Custom method to filter whether an option should be displayed in the menu */
+  closeMenuOnScroll: boolean | EventListener,
+  /*
+    This complex object includes all the compositional components that are used
+    in `react-select`. If you wish to overwrite a component, pass in an object
+    with the appropriate namespace.
+
+    If you only wish to restyle a component, we recommend using the `styles` prop
+    instead. For a list of the components that can be passed in, and the shape
+    that will be passed to them, see [the components docs](/components)
+  */
+  components: SelectComponentsConfig,
+  /* Whether the value of the select, e.g. SingleValue, should be displayed in the control. */
+  controlShouldRenderValue: boolean,
+  /* Delimiter used to join multiple values into a single HTML Input value */
+  delimiter?: string,
+  /* Clear all values when the user presses escape AND the menu is closed */
+  escapeClearsValue: boolean,
+  /* Custom method to filter whether an option should be displayed in the menu */
   filterOption:
-    | ((option: FilterOptionOption<Option>, inputValue: string) => boolean)
-    | null;
-  /**
-   * Formats group labels in the menu as React components
-   *
-   * An example can be found in the [Replacing builtins](/advanced#replacing-builtins) documentation.
-   */
-  formatGroupLabel: (group: Group) => ReactNode;
-  /** Formats option labels in the menu and control as React components */
-  formatOptionLabel?: (
-    data: Option,
-    formatOptionLabelMeta: FormatOptionLabelMeta<Option>
-  ) => ReactNode;
-  /**
-   * Resolves option data to a string to be displayed as the label by components
-   *
-   * Note: Failure to resolve to a string type can interfere with filtering and
-   * screen reader support.
-   */
-  getOptionLabel: GetOptionLabel<Option>;
-  /** Resolves option data to a string to compare options and specify value attributes */
-  getOptionValue: GetOptionValue<Option>;
-  /** Hide the selected option from the menu */
-  hideSelectedOptions?: boolean;
-  /** The id to set on the SelectContainer component. */
-  id?: string;
-  /** The value of the search input */
-  inputValue: string;
-  /** The id of the search input */
-  inputId?: string;
-  /** Define an id prefix for the select components e.g. {your-id}-value */
-  instanceId?: number | string;
-  /** Is the select value clearable */
-  isClearable?: boolean;
-  /** Is the select disabled */
-  isDisabled: boolean;
-  /** Is the select in a state of loading (async) */
-  isLoading: boolean;
-  /**
-   * Override the built-in logic to detect whether an option is disabled
-   *
-   * An example can be found in the [Replacing builtins](/advanced#replacing-builtins) documentation.
-   */
-  isOptionDisabled: (option: Option, selectValue: Options<Option>) => boolean;
-  /** Override the built-in logic to detect whether an option is selected */
-  isOptionSelected?: (option: Option, selectValue: Options<Option>) => boolean;
-  /** Support multiple selected options */
-  isMulti: IsMulti;
-  /** Is the select direction right-to-left */
-  isRtl: boolean;
-  /** Whether to enable search functionality */
-  isSearchable: boolean;
-  /** Async: Text to display when loading options */
-  loadingMessage: (obj: { inputValue: string }) => ReactNode;
-  /** Minimum height of the menu before flipping */
-  minMenuHeight: number;
-  /** Maximum height of the menu before scrolling */
-  maxMenuHeight: number;
-  /** Whether the menu is open */
-  menuIsOpen: boolean;
-  /**
-   * Default placement of the menu in relation to the control. 'auto' will flip
-   * when there isn't enough space below the control.
-   */
-  menuPlacement: MenuPlacement;
-  /** The CSS position value of the menu, when "fixed" extra layout management is required */
-  menuPosition: MenuPosition;
-  /**
-   * Whether the menu should use a portal, and where it should attach
-   *
-   * An example can be found in the [Portaling](/advanced#portaling) documentation
-   */
-  menuPortalTarget?: HTMLElement | null;
-  /** Whether to block scroll events when the menu is open */
-  menuShouldBlockScroll: boolean;
-  /** Whether the menu should be scrolled into view when it opens */
-  menuShouldScrollIntoView: boolean;
-  /** Name of the HTML Input (optional - without this, no input will be rendered) */
-  name?: string;
-  /** Text to display when there are no options */
-  noOptionsMessage: (obj: { inputValue: string }) => ReactNode;
-  /** Handle blur events on the control */
-  onBlur?: FocusEventHandler<HTMLInputElement>;
-  /** Handle change events on the select */
-  onChange: (
-    newValue: OnChangeValue<Option, IsMulti>,
-    actionMeta: ActionMeta<Option>
-  ) => void;
-  /** Handle focus events on the control */
-  onFocus?: FocusEventHandler<HTMLInputElement>;
-  /** Handle change events on the input */
-  onInputChange: (newValue: string, actionMeta: InputActionMeta) => void;
-  /** Handle key down events on the select */
-  onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
-  /** Handle the menu opening */
-  onMenuOpen: () => void;
-  /** Handle the menu closing */
-  onMenuClose: () => void;
-  /** Fired when the user scrolls to the top of the menu */
-  onMenuScrollToTop?: (event: WheelEvent | TouchEvent) => void;
-  /** Fired when the user scrolls to the bottom of the menu */
-  onMenuScrollToBottom?: (event: WheelEvent | TouchEvent) => void;
-  /** Allows control of whether the menu is opened when the Select is focused */
-  openMenuOnFocus: boolean;
-  /** Allows control of whether the menu is opened when the Select is clicked */
-  openMenuOnClick: boolean;
-  /** Array of options that populate the select menu */
-  options: OptionsOrGroups<Option, Group>;
-  /** Number of options to jump in menu when page{up|down} keys are used */
-  pageSize: number;
-  /** Placeholder for the select value */
-  placeholder: ReactNode;
-  /** Status to relay to screen readers */
-  screenReaderStatus: (obj: { count: number }) => string;
-  /**
-   * Style modifier methods
-   *
-   * A basic example can be found at the bottom of the [Replacing builtins](/advanced#replacing-builtins) documentation.
-   */
-  styles: StylesConfig<Option, IsMulti, Group>;
-  /** Theme modifier method */
-  theme?: ThemeConfig;
-  /** Sets the tabIndex attribute on the input */
-  tabIndex: number;
-  /** Select the currently focused option when the user presses tab */
-  tabSelectsValue: boolean;
-  /** Remove all non-essential styles */
-  unstyled: boolean;
-  /** The value of the select; reflected by the selected option */
-  value: PropsValue<Option>;
-  /** Sets the form attribute on the input */
-  form?: string;
-  /** Marks the value-holding input as required for form validation */
-  required?: boolean;
-}
+    | (({ label: string, value: string, data: OptionType }, string) => boolean)
+    | null,
+  /*
+    Formats group labels in the menu as React components
+
+    An example can be found in the [Replacing builtins](/advanced#replacing-builtins) documentation.
+  */
+  formatGroupLabel: typeof formatGroupLabel,
+  /* Formats option labels in the menu and control as React components */
+  formatOptionLabel?: (OptionType, FormatOptionLabelMeta) => Node,
+  /* Resolves option data to a string to be displayed as the label by components */
+  getOptionLabel: typeof getOptionLabel,
+  /* Resolves option data to a string to compare options and specify value attributes */
+  getOptionValue: typeof getOptionValue,
+  /* Hide the selected option from the menu */
+  hideSelectedOptions?: boolean,
+  /* The id to set on the SelectContainer component. */
+  id?: string,
+  /* The value of the search input */
+  inputValue: string,
+  /* The id of the search input */
+  inputId?: string,
+  /* Define an id prefix for the select components e.g. {your-id}-value */
+  instanceId?: number | string,
+  /* Is the select value clearable */
+  isClearable?: boolean,
+  /* Is the select disabled */
+  isDisabled: boolean,
+  /* Is the select in a state of loading (async) */
+  isLoading: boolean,
+  /*
+    Override the built-in logic to detect whether an option is disabled
+
+    An example can be found in the [Replacing builtins](/advanced#replacing-builtins) documentation.
+  */
+  isOptionDisabled: (OptionType, OptionsType) => boolean | false,
+  /* Override the built-in logic to detect whether an option is selected */
+  isOptionSelected?: (OptionType, OptionsType) => boolean,
+  /* Support multiple selected options */
+  isMulti: boolean,
+  /* Is the select direction right-to-left */
+  isRtl: boolean,
+  /* Whether to enable search functionality */
+  isSearchable: boolean,
+  /* Async: Text to display when loading options */
+  loadingMessage: ({ inputValue: string }) => string | null,
+  /* Minimum height of the menu before flipping */
+  minMenuHeight: number,
+  /* Maximum height of the menu before scrolling */
+  maxMenuHeight: number,
+  /* Whether the menu is open */
+  menuIsOpen: boolean,
+  /* Default placement of the menu in relation to the control. 'auto' will flip
+     when there isn't enough space below the control. */
+  menuPlacement: MenuPlacement,
+  /* The CSS position value of the menu, when "fixed" extra layout management is required */
+  menuPosition: MenuPosition,
+  /*
+    Whether the menu should use a portal, and where it should attach
+
+    An example can be found in the [Portaling](/advanced#portaling) documentation
+  */
+  menuPortalTarget?: HTMLElement,
+  /* Whether to block scroll events when the menu is open */
+  menuShouldBlockScroll: boolean,
+  /* Whether the menu should be scrolled into view when it opens */
+  menuShouldScrollIntoView: boolean,
+  /* Name of the HTML Input (optional - without this, no input will be rendered) */
+  name?: string,
+  /* Text to display when there are no options */
+  noOptionsMessage: ({ inputValue: string }) => Node | null,
+  /* Handle blur events on the control */
+  onBlur?: FocusEventHandler,
+  /* Handle change events on the select */
+  onChange: (ValueType, ActionMeta) => void,
+  /* Handle focus events on the control */
+  onFocus?: FocusEventHandler,
+  /* Handle change events on the input */
+  onInputChange: (string, InputActionMeta) => void,
+  /* Handle key down events on the select */
+  onKeyDown?: KeyboardEventHandler,
+  /* Handle the menu opening */
+  onMenuOpen: () => void,
+  /* Handle the menu closing */
+  onMenuClose: () => void,
+  /* Fired when the user scrolls to the top of the menu */
+  onMenuScrollToTop?: (SyntheticEvent<HTMLElement>) => void,
+  /* Fired when the user scrolls to the bottom of the menu */
+  onMenuScrollToBottom?: (SyntheticEvent<HTMLElement>) => void,
+  /* Allows control of whether the menu is opened when the Select is focused */
+  openMenuOnFocus: boolean,
+  /* Allows control of whether the menu is opened when the Select is clicked */
+  openMenuOnClick: boolean,
+  /* Array of options that populate the select menu */
+  options: OptionsType,
+  /* Number of options to jump in menu when page{up|down} keys are used */
+  pageSize: number,
+  /* Placeholder for the select value */
+  placeholder: Node,
+  /* Status to relay to screen readers */
+  screenReaderStatus: ({ count: number }) => string,
+  /*
+    Style modifier methods
+
+    A basic example can be found at the bottom of the [Replacing builtins](/advanced#replacing-builtins) documentation.
+  */
+  styles: StylesConfig,
+  /* Theme modifier method */
+  theme?: ThemeConfig,
+  /* Sets the tabIndex attribute on the input */
+  tabIndex: string,
+  /* Select the currently focused option when the user presses tab */
+  tabSelectsValue: boolean,
+  /* The value of the select; reflected by the selected option */
+  value: ValueType,
+  /* Sets the form attribute on the input */
+  form?: string,
+};
 
 export const defaultProps = {
-  'aria-live': 'polite',
   backspaceRemovesValue: true,
   blurInputOnSelect: isTouchCapable(),
   captureMenuScroll: !isTouchCapable(),
-  classNames: {},
   closeMenuOnSelect: true,
   closeMenuOnScroll: false,
   components: {},
   controlShouldRenderValue: true,
   escapeClearsValue: false,
   filterOption: createFilter(),
-  formatGroupLabel: formatGroupLabelBuiltin,
-  getOptionLabel: getOptionLabelBuiltin,
-  getOptionValue: getOptionValueBuiltin,
+  formatGroupLabel: formatGroupLabel,
+  getOptionLabel: getOptionLabel,
+  getOptionValue: getOptionValue,
   isDisabled: false,
   isLoading: false,
   isMulti: false,
   isRtl: false,
   isSearchable: true,
-  isOptionDisabled: isOptionDisabledBuiltin,
+  isOptionDisabled: isOptionDisabled,
   loadingMessage: () => 'Loading...',
   maxMenuHeight: 300,
   minMenuHeight: 140,
@@ -316,481 +283,109 @@ export const defaultProps = {
   screenReaderStatus: ({ count }: { count: number }) =>
     `${count} result${count !== 1 ? 's' : ''} available`,
   styles: {},
-  tabIndex: 0,
+  tabIndex: '0',
   tabSelectsValue: true,
-  unstyled: false,
 };
 
-interface State<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
-> {
-  ariaSelection: AriaSelection<Option, IsMulti> | null;
-  inputIsHidden: boolean;
-  isFocused: boolean;
-  focusedOption: Option | null;
-  focusedOptionId: string | null;
-  focusableOptionsWithIds: FocusableOptionWithId<Option>[];
-  focusedValue: Option | null;
-  selectValue: Options<Option>;
-  clearFocusValueOnUpdate: boolean;
-  prevWasFocused: boolean;
-  inputIsHiddenAfterUpdate: boolean | null | undefined;
-  prevProps: Props<Option, IsMulti, Group> | void;
-  instancePrefix: string;
-}
-
-interface CategorizedOption<Option> {
-  type: 'option';
-  data: Option;
-  isDisabled: boolean;
-  isSelected: boolean;
-  label: string;
-  value: string;
-  index: number;
-}
-
-interface FocusableOptionWithId<Option> {
-  data: Option;
-  id: string;
-}
-
-interface CategorizedGroup<Option, Group extends GroupBase<Option>> {
-  type: 'group';
-  data: Group;
-  options: readonly CategorizedOption<Option>[];
-  index: number;
-}
-
-type CategorizedGroupOrOption<Option, Group extends GroupBase<Option>> =
-  | CategorizedGroup<Option, Group>
-  | CategorizedOption<Option>;
-
-function toCategorizedOption<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  option: Option,
-  selectValue: Options<Option>,
-  index: number
-): CategorizedOption<Option> {
-  const isDisabled = isOptionDisabled(props, option, selectValue);
-  const isSelected = isOptionSelected(props, option, selectValue);
-  const label = getOptionLabel(props, option);
-  const value = getOptionValue(props, option);
-
-  return {
-    type: 'option',
-    data: option,
-    isDisabled,
-    isSelected,
-    label,
-    value,
-    index,
-  };
-}
-
-function buildCategorizedOptions<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  selectValue: Options<Option>
-): CategorizedGroupOrOption<Option, Group>[] {
-  return props.options
-    .map((groupOrOption, groupOrOptionIndex) => {
-      if ('options' in groupOrOption) {
-        const categorizedOptions = groupOrOption.options
-          .map((option, optionIndex) =>
-            toCategorizedOption(props, option, selectValue, optionIndex)
-          )
-          .filter((categorizedOption) => isFocusable(props, categorizedOption));
-        return categorizedOptions.length > 0
-          ? {
-              type: 'group' as const,
-              data: groupOrOption,
-              options: categorizedOptions,
-              index: groupOrOptionIndex,
-            }
-          : undefined;
-      }
-      const categorizedOption = toCategorizedOption(
-        props,
-        groupOrOption,
-        selectValue,
-        groupOrOptionIndex
-      );
-      return isFocusable(props, categorizedOption)
-        ? categorizedOption
-        : undefined;
-    })
-    .filter(notNullish);
-}
-
-function buildFocusableOptionsFromCategorizedOptions<
-  Option,
-  Group extends GroupBase<Option>
->(categorizedOptions: readonly CategorizedGroupOrOption<Option, Group>[]) {
-  return categorizedOptions.reduce<Option[]>(
-    (optionsAccumulator, categorizedOption) => {
-      if (categorizedOption.type === 'group') {
-        optionsAccumulator.push(
-          ...categorizedOption.options.map((option) => option.data)
-        );
-      } else {
-        optionsAccumulator.push(categorizedOption.data);
-      }
-      return optionsAccumulator;
-    },
-    []
-  );
-}
-
-function buildFocusableOptionsWithIds<Option, Group extends GroupBase<Option>>(
-  categorizedOptions: readonly CategorizedGroupOrOption<Option, Group>[],
-  optionId: string
-) {
-  return categorizedOptions.reduce<FocusableOptionWithId<Option>[]>(
-    (optionsAccumulator, categorizedOption) => {
-      if (categorizedOption.type === 'group') {
-        optionsAccumulator.push(
-          ...categorizedOption.options.map((option) => ({
-            data: option.data,
-            id: `${optionId}-${categorizedOption.index}-${option.index}`,
-          }))
-        );
-      } else {
-        optionsAccumulator.push({
-          data: categorizedOption.data,
-          id: `${optionId}-${categorizedOption.index}`,
-        });
-      }
-      return optionsAccumulator;
-    },
-    []
-  );
-}
-
-function buildFocusableOptions<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(props: Props<Option, IsMulti, Group>, selectValue: Options<Option>) {
-  return buildFocusableOptionsFromCategorizedOptions(
-    buildCategorizedOptions(props, selectValue)
-  );
-}
-
-function isFocusable<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  categorizedOption: CategorizedOption<Option>
-) {
-  const { inputValue = '' } = props;
-  const { data, isSelected, label, value } = categorizedOption;
-
-  return (
-    (!shouldHideSelectedOptions(props) || !isSelected) &&
-    filterOption(props, { label, value, data }, inputValue)
-  );
-}
-
-function getNextFocusedValue<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(state: State<Option, IsMulti, Group>, nextSelectValue: Options<Option>) {
-  const { focusedValue, selectValue: lastSelectValue } = state;
-  const lastFocusedIndex = lastSelectValue.indexOf(focusedValue!);
-  if (lastFocusedIndex > -1) {
-    const nextFocusedIndex = nextSelectValue.indexOf(focusedValue!);
-    if (nextFocusedIndex > -1) {
-      // the focused value is still in the selectValue, return it
-      return focusedValue;
-    } else if (lastFocusedIndex < nextSelectValue.length) {
-      // the focusedValue is not present in the next selectValue array by
-      // reference, so return the new value at the same index
-      return nextSelectValue[lastFocusedIndex];
-    }
-  }
-  return null;
-}
-
-function getNextFocusedOption<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(state: State<Option, IsMulti, Group>, options: Options<Option>) {
-  const { focusedOption: lastFocusedOption } = state;
-  return lastFocusedOption && options.indexOf(lastFocusedOption) > -1
-    ? lastFocusedOption
-    : options[0];
-}
-
-const getFocusedOptionId = <Option,>(
-  focusableOptionsWithIds: FocusableOptionWithId<Option>[],
-  focusedOption: Option
-) => {
-  const focusedOptionId = focusableOptionsWithIds.find(
-    (option) => option.data === focusedOption
-  )?.id;
-  return focusedOptionId || null;
+type MenuOptions = {
+  render: Array<OptionType>,
+  focusable: Array<OptionType>,
 };
 
-const getOptionLabel = <
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  data: Option
-): string => {
-  return props.getOptionLabel(data);
-};
-const getOptionValue = <
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  data: Option
-): string => {
-  return props.getOptionValue(data);
+type State = {
+  ariaLiveSelection: string,
+  ariaLiveContext: string,
+  inputIsHidden: boolean,
+  isFocused: boolean,
+  focusedOption: OptionType | null,
+  focusedValue: OptionType | null,
+  menuOptions: MenuOptions,
+  selectValue: OptionsType,
 };
 
-function isOptionDisabled<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  option: Option,
-  selectValue: Options<Option>
-): boolean {
-  return typeof props.isOptionDisabled === 'function'
-    ? props.isOptionDisabled(option, selectValue)
-    : false;
-}
-function isOptionSelected<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  option: Option,
-  selectValue: Options<Option>
-): boolean {
-  if (selectValue.indexOf(option) > -1) return true;
-  if (typeof props.isOptionSelected === 'function') {
-    return props.isOptionSelected(option, selectValue);
-  }
-  const candidate = getOptionValue(props, option);
-  return selectValue.some((i) => getOptionValue(props, i) === candidate);
-}
-function filterOption<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>,
-  option: FilterOptionOption<Option>,
-  inputValue: string
-) {
-  return props.filterOption ? props.filterOption(option, inputValue) : true;
-}
-
-const shouldHideSelectedOptions = <
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
->(
-  props: Props<Option, IsMulti, Group>
-) => {
-  const { hideSelectedOptions, isMulti } = props;
-  if (hideSelectedOptions === undefined) return isMulti;
-  return hideSelectedOptions;
-};
+type ElRef = ElementRef<*>;
 
 let instanceId = 1;
 
-export default class Select<
-  Option = unknown,
-  IsMulti extends boolean = false,
-  Group extends GroupBase<Option> = GroupBase<Option>
-> extends Component<
-  Props<Option, IsMulti, Group>,
-  State<Option, IsMulti, Group>
-> {
+export default class Select extends Component<Props, State> {
   static defaultProps = defaultProps;
-  state: State<Option, IsMulti, Group> = {
-    ariaSelection: null,
+  state = {
+    ariaLiveSelection: '',
+    ariaLiveContext: '',
     focusedOption: null,
-    focusedOptionId: null,
-    focusableOptionsWithIds: [],
     focusedValue: null,
     inputIsHidden: false,
     isFocused: false,
+    menuOptions: { render: [], focusable: [] },
     selectValue: [],
-    clearFocusValueOnUpdate: false,
-    prevWasFocused: false,
-    inputIsHiddenAfterUpdate: undefined,
-    prevProps: undefined,
-    instancePrefix: '',
   };
 
   // Misc. Instance Properties
   // ------------------------------
 
-  blockOptionHover = false;
-  isComposing = false;
+  blockOptionHover: boolean = false;
+  isComposing: boolean = false;
+  clearFocusValueOnUpdate: boolean = false;
   commonProps: any; // TODO
-  initialTouchX = 0;
-  initialTouchY = 0;
-  openAfterFocus = false;
-  scrollToFocusedOptionOnUpdate = false;
-  userIsDragging?: boolean;
-  isAppleDevice = isAppleDevice();
+  components: SelectComponents;
+  hasGroups: boolean = false;
+  initialTouchX: number = 0;
+  initialTouchY: number = 0;
+  inputIsHiddenAfterUpdate: ?boolean;
+  instancePrefix: string = '';
+  openAfterFocus: boolean = false;
+  scrollToFocusedOptionOnUpdate: boolean = false;
+  userIsDragging: ?boolean;
 
   // Refs
   // ------------------------------
 
-  controlRef: HTMLDivElement | null = null;
-  getControlRef: RefCallback<HTMLDivElement> = (ref) => {
+  controlRef: ElRef = null;
+  getControlRef = (ref: HTMLElement) => {
     this.controlRef = ref;
   };
-  focusedOptionRef: HTMLDivElement | null = null;
-  getFocusedOptionRef: RefCallback<HTMLDivElement> = (ref) => {
+  focusedOptionRef: ElRef = null;
+  getFocusedOptionRef = (ref: HTMLElement) => {
     this.focusedOptionRef = ref;
   };
-  menuListRef: HTMLDivElement | null = null;
-  getMenuListRef: RefCallback<HTMLDivElement> = (ref) => {
+  menuListRef: ElRef = null;
+  getMenuListRef = (ref: HTMLElement) => {
     this.menuListRef = ref;
   };
-  inputRef: HTMLInputElement | null = null;
-  getInputRef: RefCallback<HTMLInputElement> = (ref) => {
+  inputRef: ElRef = null;
+  getInputRef = (ref: HTMLElement) => {
     this.inputRef = ref;
   };
 
   // Lifecycle
   // ------------------------------
 
-  constructor(props: Props<Option, IsMulti, Group>) {
+  constructor(props: Props) {
     super(props);
-    this.state.instancePrefix =
+    const { value } = props;
+    this.cacheComponents = memoizeOne(this.cacheComponents, isEqual).bind(this);
+    this.cacheComponents(props.components);
+    this.instancePrefix =
       'react-select-' + (this.props.instanceId || ++instanceId);
-    this.state.selectValue = cleanValue(props.value);
-    // Set focusedOption if menuIsOpen is set on init (e.g. defaultMenuIsOpen)
-    if (props.menuIsOpen && this.state.selectValue.length) {
-      const focusableOptionsWithIds: FocusableOptionWithId<Option>[] =
-        this.getFocusableOptionsWithIds();
-      const focusableOptions = this.buildFocusableOptions();
-      const optionIndex = focusableOptions.indexOf(this.state.selectValue[0]);
-      this.state.focusableOptionsWithIds = focusableOptionsWithIds;
-      this.state.focusedOption = focusableOptions[optionIndex];
-      this.state.focusedOptionId = getFocusedOptionId(
-        focusableOptionsWithIds,
-        focusableOptions[optionIndex]
-      );
-    }
-  }
 
-  static getDerivedStateFromProps(
-    props: Props<unknown, boolean, GroupBase<unknown>>,
-    state: State<unknown, boolean, GroupBase<unknown>>
-  ) {
-    const {
-      prevProps,
-      clearFocusValueOnUpdate,
-      inputIsHiddenAfterUpdate,
-      ariaSelection,
-      isFocused,
-      prevWasFocused,
-      instancePrefix,
-    } = state;
-    const { options, value, menuIsOpen, inputValue, isMulti } = props;
     const selectValue = cleanValue(value);
-    let newMenuOptionsState = {};
-    if (
-      prevProps &&
-      (value !== prevProps.value ||
-        options !== prevProps.options ||
-        menuIsOpen !== prevProps.menuIsOpen ||
-        inputValue !== prevProps.inputValue)
-    ) {
-      const focusableOptions = menuIsOpen
-        ? buildFocusableOptions(props, selectValue)
-        : [];
 
-      const focusableOptionsWithIds = menuIsOpen
-        ? buildFocusableOptionsWithIds(
-            buildCategorizedOptions(props, selectValue),
-            `${instancePrefix}-option`
-          )
-        : [];
+    this.buildMenuOptions = memoizeOne(
+      this.buildMenuOptions,
+      (newArgs: any, lastArgs: any) => {
+        const [newProps, newSelectValue] = (newArgs: [Props, OptionsType]);
+        const [lastProps, lastSelectValue] = (lastArgs: [Props, OptionsType]);
 
-      const focusedValue = clearFocusValueOnUpdate
-        ? getNextFocusedValue(state, selectValue)
-        : null;
-      const focusedOption = getNextFocusedOption(state, focusableOptions);
-      const focusedOptionId = getFocusedOptionId(
-        focusableOptionsWithIds,
-        focusedOption
-      );
+        return isEqual(newSelectValue, lastSelectValue)
+          && isEqual(newProps.inputValue, lastProps.inputValue)
+          && isEqual(newProps.options, lastProps.options);
+      }).bind(this);
+    const menuOptions = props.menuIsOpen
+      ? this.buildMenuOptions(props, selectValue)
+      : { render: [], focusable: [] };
 
-      newMenuOptionsState = {
-        selectValue,
-        focusedOption,
-        focusedOptionId,
-        focusableOptionsWithIds,
-        focusedValue,
-        clearFocusValueOnUpdate: false,
-      };
-    }
-    // some updates should toggle the state of the input visibility
-    const newInputIsHiddenState =
-      inputIsHiddenAfterUpdate != null && props !== prevProps
-        ? {
-            inputIsHidden: inputIsHiddenAfterUpdate,
-            inputIsHiddenAfterUpdate: undefined,
-          }
-        : {};
-
-    let newAriaSelection = ariaSelection;
-
-    let hasKeptFocus = isFocused && prevWasFocused;
-
-    if (isFocused && !hasKeptFocus) {
-      // If `value` or `defaultValue` props are not empty then announce them
-      // when the Select is initially focused
-      newAriaSelection = {
-        value: valueTernary(isMulti, selectValue, selectValue[0] || null),
-        options: selectValue,
-        action: 'initial-input-focus',
-      };
-
-      hasKeptFocus = !prevWasFocused;
-    }
-
-    // If the 'initial-input-focus' action has been set already
-    // then reset the ariaSelection to null
-    if (ariaSelection?.action === 'initial-input-focus') {
-      newAriaSelection = null;
-    }
-
-    return {
-      ...newMenuOptionsState,
-      ...newInputIsHiddenState,
-      prevProps: props,
-      ariaSelection: newAriaSelection,
-      prevWasFocused: hasKeptFocus,
-    };
+    this.state.menuOptions = menuOptions;
+    this.state.selectValue = selectValue;
   }
   componentDidMount() {
     this.startListeningComposition();
@@ -804,18 +399,35 @@ export default class Select<
     if (this.props.autoFocus) {
       this.focusInput();
     }
-
-    // Scroll focusedOption into view if menuIsOpen is set on mount (e.g. defaultMenuIsOpen)
+  }
+  UNSAFE_componentWillReceiveProps(nextProps: Props) {
+    const { options, value, menuIsOpen, inputValue } = this.props;
+    // re-cache custom components
+    this.cacheComponents(nextProps.components);
+    // rebuild the menu options
     if (
-      this.props.menuIsOpen &&
-      this.state.focusedOption &&
-      this.menuListRef &&
-      this.focusedOptionRef
+      nextProps.value !== value ||
+      nextProps.options !== options ||
+      nextProps.menuIsOpen !== menuIsOpen ||
+      nextProps.inputValue !== inputValue
     ) {
-      scrollIntoView(this.menuListRef, this.focusedOptionRef);
+      const selectValue = cleanValue(nextProps.value);
+      const menuOptions = nextProps.menuIsOpen
+        ? this.buildMenuOptions(nextProps, selectValue)
+        : { render: [], focusable: [] };
+      const focusedValue = this.getNextFocusedValue(selectValue);
+      const focusedOption = this.getNextFocusedOption(menuOptions.focusable);
+      this.setState({ menuOptions, selectValue, focusedOption, focusedValue });
+    }
+    // some updates should toggle the state of the input visibility
+    if (this.inputIsHiddenAfterUpdate != null) {
+      this.setState({
+        inputIsHidden: this.inputIsHiddenAfterUpdate,
+      });
+      delete this.inputIsHiddenAfterUpdate;
     }
   }
-  componentDidUpdate(prevProps: Props<Option, IsMulti, Group>) {
+  componentDidUpdate(prevProps: Props) {
     const { isDisabled, menuIsOpen } = this.props;
     const { isFocused } = this.state;
 
@@ -826,21 +438,6 @@ export default class Select<
       (isFocused && menuIsOpen && !prevProps.menuIsOpen)
     ) {
       this.focusInput();
-    }
-
-    if (isFocused && isDisabled && !prevProps.isDisabled) {
-      // ensure select state gets blurred in case Select is programmatically disabled while focused
-      // eslint-disable-next-line react/no-did-update-set-state
-      this.setState({ isFocused: false }, this.onMenuClose);
-    } else if (
-      !isFocused &&
-      !isDisabled &&
-      prevProps.isDisabled &&
-      this.inputRef === document.activeElement
-    ) {
-      // ensure select state gets focused in case Select is programatically re-enabled while focused (Firefox)
-      // eslint-disable-next-line react/no-did-update-set-state
-      this.setState({ isFocused: true });
     }
 
     // scroll the focused option into view if necessary
@@ -858,7 +455,9 @@ export default class Select<
     this.stopListeningToTouch();
     document.removeEventListener('scroll', this.onScroll, true);
   }
-
+  cacheComponents = (components: SelectComponents) => {
+    this.components = defaultComponents({ components });
+  };
   // ==============================
   // Consumer Handlers
   // ==============================
@@ -867,11 +466,12 @@ export default class Select<
     this.props.onMenuOpen();
   }
   onMenuClose() {
-    this.onInputChange('', {
-      action: 'menu-close',
-      prevInputValue: this.props.inputValue,
+    const { isSearchable, isMulti } = this.props;
+    this.announceAriaLiveContext({
+      event: 'input',
+      context: { isSearchable, isMulti },
     });
-
+    this.onInputChange('', { action: 'menu-close' });
     this.props.onMenuClose();
   }
   onInputChange(newValue: string, actionMeta: InputActionMeta) {
@@ -897,11 +497,13 @@ export default class Select<
 
   openMenu(focusOption: 'first' | 'last') {
     const { selectValue, isFocused } = this.state;
-    const focusableOptions = this.buildFocusableOptions();
-    let openAtIndex = focusOption === 'first' ? 0 : focusableOptions.length - 1;
+    const menuOptions = this.buildMenuOptions(this.props, selectValue);
+    const { isMulti } = this.props;
+    let openAtIndex =
+      focusOption === 'first' ? 0 : menuOptions.focusable.length - 1;
 
-    if (!this.props.isMulti) {
-      const selectedIndex = focusableOptions.indexOf(selectValue[0]);
+    if (!isMulti) {
+      const selectedIndex = menuOptions.focusable.indexOf(selectValue[0]);
       if (selectedIndex > -1) {
         openAtIndex = selectedIndex;
       }
@@ -909,31 +511,32 @@ export default class Select<
 
     // only scroll if the menu isn't already open
     this.scrollToFocusedOptionOnUpdate = !(isFocused && this.menuListRef);
+    this.inputIsHiddenAfterUpdate = false;
 
-    this.setState(
-      {
-        inputIsHiddenAfterUpdate: false,
-        focusedValue: null,
-        focusedOption: focusableOptions[openAtIndex],
-        focusedOptionId: this.getFocusedOptionId(focusableOptions[openAtIndex]),
-      },
-      () => this.onMenuOpen()
-    );
+    this.setState({
+      menuOptions,
+      focusedValue: null,
+      focusedOption: menuOptions.focusable[openAtIndex],
+    }, () => {
+      this.onMenuOpen();
+      this.announceAriaLiveContext({ event: 'menu' });
+    });
   }
-
   focusValue(direction: 'previous' | 'next') {
+    const { isMulti, isSearchable } = this.props;
     const { selectValue, focusedValue } = this.state;
 
     // Only multiselects support value focusing
-    if (!this.props.isMulti) return;
+    if (!isMulti) return;
 
     this.setState({
       focusedOption: null,
     });
 
-    let focusedIndex = selectValue.indexOf(focusedValue!);
+    let focusedIndex = selectValue.indexOf(focusedValue);
     if (!focusedValue) {
       focusedIndex = -1;
+      this.announceAriaLiveContext({ event: 'value' });
     }
 
     const lastIndex = selectValue.length - 1;
@@ -958,6 +561,14 @@ export default class Select<
         }
         break;
     }
+
+    if (nextFocus === -1) {
+      this.announceAriaLiveContext({
+        event: 'input',
+        context: { isSearchable, isMulti },
+      });
+    }
+
     this.setState({
       inputIsHidden: nextFocus !== -1,
       focusedValue: selectValue[nextFocus],
@@ -966,14 +577,15 @@ export default class Select<
 
   focusOption(direction: FocusDirection = 'first') {
     const { pageSize } = this.props;
-    const { focusedOption } = this.state;
-    const options = this.getFocusableOptions();
+    const { focusedOption, menuOptions } = this.state;
+    const options = menuOptions.focusable;
 
     if (!options.length) return;
     let nextFocus = 0; // handles 'first'
-    let focusedIndex = options.indexOf(focusedOption!);
+    let focusedIndex = options.indexOf(focusedOption);
     if (!focusedOption) {
       focusedIndex = -1;
+      this.announceAriaLiveContext({ event: 'menu' });
     }
 
     if (direction === 'up') {
@@ -993,110 +605,115 @@ export default class Select<
     this.setState({
       focusedOption: options[nextFocus],
       focusedValue: null,
-      focusedOptionId: this.getFocusedOptionId(options[nextFocus]),
+    });
+    this.announceAriaLiveContext({
+      event: 'menu',
+      context: { isDisabled: isOptionDisabled(options[nextFocus]) },
     });
   }
-  onChange = (
-    newValue: OnChangeValue<Option, IsMulti>,
-    actionMeta: ActionMeta<Option>
-  ) => {
+  onChange = (newValue: ValueType, actionMeta: ActionMeta) => {
     const { onChange, name } = this.props;
-    actionMeta.name = name;
-
-    this.ariaOnChange(newValue, actionMeta);
-    onChange(newValue, actionMeta);
+    onChange(newValue, { ...actionMeta, name });
   };
   setValue = (
-    newValue: OnChangeValue<Option, IsMulti>,
-    action: SetValueAction,
-    option?: Option
+    newValue: ValueType,
+    action: ActionTypes = 'set-value',
+    option?: OptionType
   ) => {
-    const { closeMenuOnSelect, isMulti, inputValue } = this.props;
-    this.onInputChange('', { action: 'set-value', prevInputValue: inputValue });
+    const { closeMenuOnSelect, isMulti } = this.props;
+    this.onInputChange('', { action: 'set-value' });
     if (closeMenuOnSelect) {
-      this.setState({
-        inputIsHiddenAfterUpdate: !isMulti,
-      });
+      this.inputIsHiddenAfterUpdate = !isMulti;
       this.onMenuClose();
     }
     // when the select value should change, we should reset focusedValue
-    this.setState({ clearFocusValueOnUpdate: true });
+    this.clearFocusValueOnUpdate = true;
     this.onChange(newValue, { action, option });
   };
-  selectOption = (newValue: Option) => {
-    const { blurInputOnSelect, isMulti, name } = this.props;
+  selectOption = (newValue: OptionType) => {
+    const { blurInputOnSelect, isMulti } = this.props;
     const { selectValue } = this.state;
-    const deselected = isMulti && this.isOptionSelected(newValue, selectValue);
-    const isDisabled = this.isOptionDisabled(newValue, selectValue);
 
-    if (deselected) {
-      const candidate = this.getOptionValue(newValue);
-      this.setValue(
-        multiValueAsValue(
-          selectValue.filter((i) => this.getOptionValue(i) !== candidate)
-        ),
-        'deselect-option',
-        newValue
-      );
-    } else if (!isDisabled) {
-      // Select option if option is not disabled
-      if (isMulti) {
+    if (isMulti) {
+      if (this.isOptionSelected(newValue, selectValue)) {
+        const candidate = this.getOptionValue(newValue);
         this.setValue(
-          multiValueAsValue([...selectValue, newValue]),
-          'select-option',
+          selectValue.filter(i => this.getOptionValue(i) !== candidate),
+          'deselect-option',
           newValue
         );
+        this.announceAriaLiveSelection({
+          event: 'deselect-option',
+          context: { value: this.getOptionLabel(newValue) },
+        });
       } else {
-        this.setValue(singleValueAsValue(newValue), 'select-option');
+        if (!this.isOptionDisabled(newValue, selectValue)) {
+          this.setValue([...selectValue, newValue], 'select-option', newValue);
+          this.announceAriaLiveSelection({
+            event: 'select-option',
+            context: { value: this.getOptionLabel(newValue) },
+          });
+        } else {
+          // announce that option is disabled
+          this.announceAriaLiveSelection({
+            event: 'select-option',
+            context: { value: this.getOptionLabel(newValue), isDisabled: true },
+          });
+        }
       }
     } else {
-      this.ariaOnChange(singleValueAsValue(newValue), {
-        action: 'select-option',
-        option: newValue,
-        name,
-      });
-      return;
+      if (!this.isOptionDisabled(newValue, selectValue)) {
+        this.setValue(newValue, 'select-option');
+        this.announceAriaLiveSelection({
+          event: 'select-option',
+          context: { value: this.getOptionLabel(newValue) },
+        });
+      } else {
+        // announce that option is disabled
+        this.announceAriaLiveSelection({
+          event: 'select-option',
+          context: { value: this.getOptionLabel(newValue), isDisabled: true },
+        });
+      }
     }
 
     if (blurInputOnSelect) {
       this.blurInput();
     }
   };
-  removeValue = (removedValue: Option) => {
-    const { isMulti } = this.props;
+  removeValue = (removedValue: OptionType) => {
     const { selectValue } = this.state;
     const candidate = this.getOptionValue(removedValue);
-    const newValueArray = selectValue.filter(
-      (i) => this.getOptionValue(i) !== candidate
+    const newValue = selectValue.filter(
+      i => this.getOptionValue(i) !== candidate
     );
-    const newValue = valueTernary(
-      isMulti,
-      newValueArray,
-      newValueArray[0] || null
-    );
-
-    this.onChange(newValue, { action: 'remove-value', removedValue });
+    this.onChange(newValue.length ? newValue : null, {
+      action: 'remove-value',
+      removedValue,
+    });
+    this.announceAriaLiveSelection({
+      event: 'remove-value',
+      context: {
+        value: removedValue ? this.getOptionLabel(removedValue) : '',
+      },
+    });
     this.focusInput();
   };
   clearValue = () => {
-    const { selectValue } = this.state;
-    this.onChange(valueTernary(this.props.isMulti, [], null), {
-      action: 'clear',
-      removedValues: selectValue,
-    });
+    const { isMulti } = this.props;
+    this.onChange(isMulti ? [] : null, { action: 'clear' });
   };
   popValue = () => {
-    const { isMulti } = this.props;
     const { selectValue } = this.state;
     const lastSelectedValue = selectValue[selectValue.length - 1];
-    const newValueArray = selectValue.slice(0, selectValue.length - 1);
-    const newValue = valueTernary(
-      isMulti,
-      newValueArray,
-      newValueArray[0] || null
-    );
-
-    this.onChange(newValue, {
+    const newValue = selectValue.slice(0, selectValue.length - 1);
+    this.announceAriaLiveSelection({
+      event: 'pop-value',
+      context: {
+        value: lastSelectedValue ? this.getOptionLabel(lastSelectedValue) : '',
+      },
+    });
+    this.onChange(newValue.length ? newValue : null, {
       action: 'pop-value',
       removedValue: lastSelectedValue,
     });
@@ -1107,7 +724,7 @@ export default class Select<
   // ==============================
 
   getTheme() {
-    // Use the default theme if there are no customisations.
+    // Use the default theme if there are no customizations.
     if (!this.props.theme) {
       return defaultTheme;
     }
@@ -1125,109 +742,111 @@ export default class Select<
     };
   }
 
-  getFocusedOptionId = (focusedOption: Option) => {
-    return getFocusedOptionId(
-      this.state.focusableOptionsWithIds,
-      focusedOption
-    );
-  };
-
-  getFocusableOptionsWithIds = () => {
-    return buildFocusableOptionsWithIds(
-      buildCategorizedOptions(this.props, this.state.selectValue),
-      this.getElementId('option')
-    );
-  };
-
-  getValue = () => this.state.selectValue;
-
-  cx = (...args: any) => classNames(this.props.classNamePrefix, ...args);
-
   getCommonProps() {
-    const {
-      clearValue,
-      cx,
-      getStyles,
-      getClassNames,
-      getValue,
-      selectOption,
-      setValue,
-      props,
-    } = this;
-    const { isMulti, isRtl, options } = props;
+    const { clearValue, getStyles, setValue, selectOption, props } = this;
+    const { classNamePrefix, isMulti, isRtl, options } = props;
+    const { selectValue } = this.state;
     const hasValue = this.hasValue();
+    const getValue = () => selectValue;
 
+    const cx = classNames.bind(null, classNamePrefix);
     return {
-      clearValue,
       cx,
+      clearValue,
       getStyles,
-      getClassNames,
       getValue,
       hasValue,
       isMulti,
       isRtl,
       options,
       selectOption,
-      selectProps: props,
       setValue,
+      selectProps: props,
       theme: this.getTheme(),
     };
   }
 
-  getOptionLabel = (data: Option): string => {
-    return getOptionLabel(this.props, data);
+  getNextFocusedValue(nextSelectValue: OptionsType) {
+    if (this.clearFocusValueOnUpdate) {
+      this.clearFocusValueOnUpdate = false;
+      return null;
+    }
+    const { focusedValue, selectValue: lastSelectValue } = this.state;
+    const lastFocusedIndex = lastSelectValue.indexOf(focusedValue);
+    if (lastFocusedIndex > -1) {
+      const nextFocusedIndex = nextSelectValue.indexOf(focusedValue);
+      if (nextFocusedIndex > -1) {
+        // the focused value is still in the selectValue, return it
+        return focusedValue;
+      } else if (lastFocusedIndex < nextSelectValue.length) {
+        // the focusedValue is not present in the next selectValue array by
+        // reference, so return the new value at the same index
+        return nextSelectValue[lastFocusedIndex];
+      }
+    }
+    return null;
+  }
+
+  getNextFocusedOption(options: OptionsType) {
+    const { focusedOption: lastFocusedOption } = this.state;
+    return lastFocusedOption && options.indexOf(lastFocusedOption) > -1
+      ? lastFocusedOption
+      : options[0];
+  }
+  getOptionLabel = (data: OptionType): string => {
+    return this.props.getOptionLabel(data);
   };
-  getOptionValue = (data: Option): string => {
-    return getOptionValue(this.props, data);
+  getOptionValue = (data: OptionType): string => {
+    return this.props.getOptionValue(data);
   };
-  getStyles = <Key extends keyof StylesProps<Option, IsMulti, Group>>(
-    key: Key,
-    props: StylesProps<Option, IsMulti, Group>[Key]
-  ) => {
-    const { unstyled } = this.props;
-    const base = defaultStyles[key](props as any, unstyled);
+  getStyles = (key: string, props: {}): {} => {
+    const base = defaultStyles[key](props);
     base.boxSizing = 'border-box';
     const custom = this.props.styles[key];
-    return custom ? custom(base, props as any) : base;
+    return custom ? custom(base, props) : base;
   };
-  getClassNames = <Key extends keyof StylesProps<Option, IsMulti, Group>>(
-    key: Key,
-    props: StylesProps<Option, IsMulti, Group>[Key]
-  ) => this.props.classNames[key]?.(props as any);
-  getElementId = (
-    element:
-      | 'group'
-      | 'input'
-      | 'listbox'
-      | 'option'
-      | 'placeholder'
-      | 'live-region'
-  ) => {
-    return `${this.state.instancePrefix}-${element}`;
+  getElementId = (element: 'group' | 'input' | 'listbox' | 'option') => {
+    return `${this.instancePrefix}-${element}`;
   };
+  getActiveDescendentId = () => {
+    const { menuIsOpen } = this.props;
+    const { menuOptions, focusedOption } = this.state;
 
-  getComponents = () => {
-    return defaultComponents(this.props);
-  };
+    if (!focusedOption || !menuIsOpen) return undefined;
 
-  buildCategorizedOptions = () =>
-    buildCategorizedOptions(this.props, this.state.selectValue);
-  getCategorizedOptions = () =>
-    this.props.menuIsOpen ? this.buildCategorizedOptions() : [];
-  buildFocusableOptions = () =>
-    buildFocusableOptionsFromCategorizedOptions(this.buildCategorizedOptions());
-  getFocusableOptions = () =>
-    this.props.menuIsOpen ? this.buildFocusableOptions() : [];
+    const index = menuOptions.focusable.indexOf(focusedOption);
+    const option = menuOptions.render[index];
+
+    return option && option.key;
+  };
 
   // ==============================
   // Helpers
   // ==============================
-
-  ariaOnChange = (
-    value: OnChangeValue<Option, IsMulti>,
-    actionMeta: ActionMeta<Option>
-  ) => {
-    this.setState({ ariaSelection: { value, ...actionMeta } });
+  announceAriaLiveSelection = ({
+    event,
+    context,
+  }: {
+    event: string,
+    context: ValueEventContext,
+  }) => {
+    this.setState({
+      ariaLiveSelection: valueEventAriaMessage(event, context),
+    });
+  };
+  announceAriaLiveContext = ({
+    event,
+    context,
+  }: {
+    event: string,
+    context?: InstructionsContext,
+  }) => {
+    this.setState({
+      ariaLiveContext: instructionsAriaMessage(event, {
+        ...context,
+        label: this.props['aria-label'],
+      }),
+    });
   };
 
   hasValue() {
@@ -1235,7 +854,10 @@ export default class Select<
     return selectValue.length > 0;
   }
   hasOptions() {
-    return !!this.getFocusableOptions().length;
+    return !!this.state.menuOptions.render.length;
+  }
+  countOptions() {
+    return this.state.menuOptions.focusable.length;
   }
   isClearable(): boolean {
     const { isClearable, isMulti } = this.props;
@@ -1246,19 +868,28 @@ export default class Select<
 
     return isClearable;
   }
-  isOptionDisabled(option: Option, selectValue: Options<Option>): boolean {
-    return isOptionDisabled(this.props, option, selectValue);
+  isOptionDisabled(option: OptionType, selectValue: OptionsType): boolean {
+    return typeof this.props.isOptionDisabled === 'function'
+      ? this.props.isOptionDisabled(option, selectValue)
+      : false;
   }
-  isOptionSelected(option: Option, selectValue: Options<Option>): boolean {
-    return isOptionSelected(this.props, option, selectValue);
+  isOptionSelected(option: OptionType, selectValue: OptionsType): boolean {
+    if (selectValue.indexOf(option) > -1) return true;
+    if (typeof this.props.isOptionSelected === 'function') {
+      return this.props.isOptionSelected(option, selectValue);
+    }
+    const candidate = this.getOptionValue(option);
+    return selectValue.some(i => this.getOptionValue(i) === candidate);
   }
-  filterOption(option: FilterOptionOption<Option>, inputValue: string) {
-    return filterOption(this.props, option, inputValue);
+  filterOption(
+    option: { label: string, value: string, data: OptionType },
+    inputValue: string
+  ) {
+    return this.props.filterOption
+      ? this.props.filterOption(option, inputValue)
+      : true;
   }
-  formatOptionLabel(
-    data: Option,
-    context: FormatOptionLabelContext
-  ): ReactNode {
+  formatOptionLabel(data: OptionType, context: FormatOptionLabelContext): Node {
     if (typeof this.props.formatOptionLabel === 'function') {
       const { inputValue } = this.props;
       const { selectValue } = this.state;
@@ -1271,7 +902,7 @@ export default class Select<
       return this.getOptionLabel(data);
     }
   }
-  formatGroupLabel(data: Group) {
+  formatGroupLabel(data: GroupType) {
     return this.props.formatGroupLabel(data);
   }
 
@@ -1279,7 +910,7 @@ export default class Select<
   // Mouse Handlers
   // ==============================
 
-  onMenuMouseDown: MouseEventHandler<HTMLDivElement> = (event) => {
+  onMenuMouseDown = (event: SyntheticMouseEvent<HTMLElement>) => {
     if (event.button !== 0) {
       return;
     }
@@ -1287,16 +918,10 @@ export default class Select<
     event.preventDefault();
     this.focusInput();
   };
-  onMenuMouseMove: MouseEventHandler<HTMLDivElement> = (event) => {
+  onMenuMouseMove = (event: SyntheticMouseEvent<HTMLElement>) => {
     this.blockOptionHover = false;
   };
-  onControlMouseDown = (
-    event: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>
-  ) => {
-    // Event captured by dropdown indicator
-    if (event.defaultPrevented) {
-      return;
-    }
+  onControlMouseDown = (event: MouseOrTouchEvent) => {
     const { openMenuOnClick } = this.props;
     if (!this.state.isFocused) {
       if (openMenuOnClick) {
@@ -1309,54 +934,45 @@ export default class Select<
       }
     } else {
       if (
-        (event.target as HTMLElement).tagName !== 'INPUT' &&
-        (event.target as HTMLElement).tagName !== 'TEXTAREA'
+        // $FlowFixMe
+        event.target.tagName !== 'INPUT' &&
+        event.target.tagName !== 'TEXTAREA'
       ) {
         this.onMenuClose();
       }
     }
     if (
-      (event.target as HTMLElement).tagName !== 'INPUT' &&
-      (event.target as HTMLElement).tagName !== 'TEXTAREA'
+      // $FlowFixMe
+      event.target.tagName !== 'INPUT' &&
+      event.target.tagName !== 'TEXTAREA'
     ) {
       event.preventDefault();
     }
   };
-  onDropdownIndicatorMouseDown = (
-    event: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>
-  ) => {
+  onDropdownIndicatorMouseDown = (event: MouseOrTouchEvent) => {
     // ignore mouse events that weren't triggered by the primary button
-    if (
-      event &&
-      event.type === 'mousedown' &&
-      (event as React.MouseEvent<HTMLDivElement>).button !== 0
-    ) {
+    if (event && event.type === 'mousedown' && event.button !== 0) {
       return;
     }
     if (this.props.isDisabled) return;
     const { isMulti, menuIsOpen } = this.props;
     this.focusInput();
     if (menuIsOpen) {
-      this.setState({ inputIsHiddenAfterUpdate: !isMulti });
+      this.inputIsHiddenAfterUpdate = !isMulti;
       this.onMenuClose();
     } else {
       this.openMenu('first');
     }
     event.preventDefault();
+    event.stopPropagation();
   };
-  onClearIndicatorMouseDown = (
-    event: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>
-  ) => {
+  onClearIndicatorMouseDown = (event: MouseOrTouchEvent) => {
     // ignore mouse events that weren't triggered by the primary button
-    if (
-      event &&
-      event.type === 'mousedown' &&
-      (event as React.MouseEvent<HTMLDivElement>).button !== 0
-    ) {
+    if (event && event.type === 'mousedown' && event.button !== 0) {
       return;
     }
     this.clearValue();
-    event.preventDefault();
+    event.stopPropagation();
     this.openAfterFocus = false;
     if (event.type === 'touchend') {
       this.focusInput();
@@ -1454,9 +1070,9 @@ export default class Select<
     // on events on child elements, not the document (which we've attached this handler to).
     if (
       this.controlRef &&
-      !this.controlRef.contains(event.target as Node) &&
+      !this.controlRef.contains(event.target) &&
       this.menuListRef &&
-      !this.menuListRef.contains(event.target as Node)
+      !this.menuListRef.contains(event.target)
     ) {
       this.blurInput();
     }
@@ -1465,16 +1081,16 @@ export default class Select<
     this.initialTouchX = 0;
     this.initialTouchY = 0;
   };
-  onControlTouchEnd: TouchEventHandler<HTMLDivElement> = (event) => {
+  onControlTouchEnd = (event: SyntheticTouchEvent<HTMLElement>) => {
     if (this.userIsDragging) return;
     this.onControlMouseDown(event);
   };
-  onClearIndicatorTouchEnd: TouchEventHandler<HTMLDivElement> = (event) => {
+  onClearIndicatorTouchEnd = (event: SyntheticTouchEvent<HTMLElement>) => {
     if (this.userIsDragging) return;
 
     this.onClearIndicatorMouseDown(event);
   };
-  onDropdownIndicatorTouchEnd: TouchEventHandler<HTMLDivElement> = (event) => {
+  onDropdownIndicatorTouchEnd = (event: SyntheticTouchEvent<HTMLElement>) => {
     if (this.userIsDragging) return;
 
     this.onDropdownIndicatorMouseDown(event);
@@ -1484,21 +1100,25 @@ export default class Select<
   // Focus Handlers
   // ==============================
 
-  handleInputChange: FormEventHandler<HTMLInputElement> = (event) => {
-    const { inputValue: prevInputValue } = this.props;
+  handleInputChange = (event: SyntheticKeyboardEvent<HTMLInputElement>) => {
     const inputValue = event.currentTarget.value;
-    this.setState({ inputIsHiddenAfterUpdate: false });
-    this.onInputChange(inputValue, { action: 'input-change', prevInputValue });
+    this.inputIsHiddenAfterUpdate = false;
+    this.onInputChange(inputValue, { action: 'input-change' });
     if (!this.props.menuIsOpen) {
       this.onMenuOpen();
     }
   };
-  onInputFocus: FocusEventHandler<HTMLInputElement> = (event) => {
+  onInputFocus = (event: SyntheticFocusEvent<HTMLInputElement>) => {
+    const { isSearchable, isMulti } = this.props;
     if (this.props.onFocus) {
       this.props.onFocus(event);
     }
+    this.inputIsHiddenAfterUpdate = false;
+    this.announceAriaLiveContext({
+      event: 'input',
+      context: { isSearchable, isMulti },
+    });
     this.setState({
-      inputIsHiddenAfterUpdate: false,
       isFocused: true,
     });
     if (this.openAfterFocus || this.props.openMenuOnFocus) {
@@ -1506,52 +1126,38 @@ export default class Select<
     }
     this.openAfterFocus = false;
   };
-  onInputBlur: FocusEventHandler<HTMLInputElement> = (event) => {
-    const { inputValue: prevInputValue } = this.props;
+  onInputBlur = (event: SyntheticFocusEvent<HTMLInputElement>) => {
     if (this.menuListRef && this.menuListRef.contains(document.activeElement)) {
-      this.inputRef!.focus();
+      this.inputRef.focus();
       return;
     }
     if (this.props.onBlur) {
       this.props.onBlur(event);
     }
-    this.onInputChange('', { action: 'input-blur', prevInputValue });
+    this.onInputChange('', { action: 'input-blur' });
     this.onMenuClose();
     this.setState({
       focusedValue: null,
       isFocused: false,
     });
   };
-  onOptionHover = (focusedOption: Option) => {
+  onOptionHover = (focusedOption: OptionType) => {
     if (this.blockOptionHover || this.state.focusedOption === focusedOption) {
       return;
     }
-    const options = this.getFocusableOptions();
-    const focusedOptionIndex = options.indexOf(focusedOption!);
-    this.setState({
-      focusedOption,
-      focusedOptionId:
-        focusedOptionIndex > -1 ? this.getFocusedOptionId(focusedOption) : null,
-    });
+    this.setState({ focusedOption });
   };
   shouldHideSelectedOptions = () => {
-    return shouldHideSelectedOptions(this.props);
-  };
-
-  // If the hidden input gets focus through form submit,
-  // redirect focus to focusable input.
-  onValueInputFocus: FocusEventHandler = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    this.focus();
+    const { hideSelectedOptions, isMulti } = this.props;
+    if (hideSelectedOptions === undefined) return isMulti;
+    return hideSelectedOptions;
   };
 
   // ==============================
   // Keyboard Handlers
   // ==============================
 
-  onKeyDown: KeyboardEventHandler<HTMLDivElement> = (event) => {
+  onKeyDown = (event: SyntheticKeyboardEvent<HTMLElement>) => {
     const {
       isMulti,
       backspaceRemovesValue,
@@ -1631,13 +1237,8 @@ export default class Select<
         return;
       case 'Escape':
         if (menuIsOpen) {
-          this.setState({
-            inputIsHiddenAfterUpdate: false,
-          });
-          this.onInputChange('', {
-            action: 'menu-close',
-            prevInputValue: inputValue,
-          });
+          this.inputIsHiddenAfterUpdate = false;
+          this.onInputChange('', { action: 'menu-close' });
           this.onMenuClose();
         } else if (isClearable && escapeClearsValue) {
           this.clearValue();
@@ -1691,8 +1292,136 @@ export default class Select<
   };
 
   // ==============================
+  // Menu Options
+  // ==============================
+
+  buildMenuOptions = (props: Props, selectValue: OptionsType): MenuOptions => {
+    const { inputValue = '', options } = props;
+
+    const toOption = (option, id) => {
+      const isDisabled = this.isOptionDisabled(option, selectValue);
+      const isSelected = this.isOptionSelected(option, selectValue);
+      const label = this.getOptionLabel(option);
+      const value = this.getOptionValue(option);
+
+      if (
+        (this.shouldHideSelectedOptions() && isSelected) ||
+        !this.filterOption({ label, value, data: option }, inputValue)
+      ) {
+        return;
+      }
+
+      const onHover = isDisabled ? undefined : () => this.onOptionHover(option);
+      const onSelect = isDisabled ? undefined : () => this.selectOption(option);
+      const optionId = `${this.getElementId('option')}-${id}`;
+
+      return {
+        innerProps: {
+          id: optionId,
+          onClick: onSelect,
+          onMouseMove: onHover,
+          onMouseOver: onHover,
+          tabIndex: -1,
+        },
+        data: option,
+        isDisabled,
+        isSelected,
+        key: optionId,
+        label,
+        type: 'option',
+        value,
+      };
+    };
+
+    const parseOptions = (acc, item, itemIndex) => {
+      if (item.options) {
+        const { options: items } = item;
+        const children = items
+          .map((child, i) => parseOptions(acc, child, `${itemIndex}-${i}`))
+          .filter(Boolean);
+        return {
+          type: 'group',
+          key: `${this.getElementId('group')}-${itemIndex}`,
+          data: item,
+          options: children,
+        };
+      } else {
+        const option = toOption(item, `${itemIndex}`);
+        if (option && !option.isDisabled) acc.focusable.push(item);
+        return option;
+      }
+    };
+
+    return options.reduce(
+      (acc, item, itemIndex) => {
+        if (item.options) {
+          // TODO needs a tidier implementation
+          if (!this.hasGroups) this.hasGroups = true;
+
+          const { options: items } = item;
+          const children = items
+            .map((child, i) => parseOptions(acc, child, `${itemIndex}-${i}`))
+            .filter(Boolean);
+          if (children.length) {
+            const groupId = `${this.getElementId('group')}-${itemIndex}`;
+            acc.render.push({
+              type: 'group',
+              key: groupId,
+              data: item,
+              options: children,
+            });
+          }
+        } else {
+          const option = toOption(item, `${itemIndex}`);
+          if (option) {
+            acc.render.push(option);
+            acc.focusable.push(item);
+          }
+        }
+        return acc;
+      },
+      { render: [], focusable: [] }
+    );
+  }
+
+  // ==============================
   // Renderers
   // ==============================
+  constructAriaLiveMessage() {
+    const {
+      ariaLiveContext,
+      selectValue,
+      focusedValue,
+      focusedOption,
+    } = this.state;
+    const { options, menuIsOpen, inputValue, screenReaderStatus } = this.props;
+
+    // An aria live message representing the currently focused value in the select.
+    const focusedValueMsg = focusedValue
+      ? valueFocusAriaMessage({
+          focusedValue,
+          getOptionLabel: this.getOptionLabel,
+          selectValue,
+        })
+      : '';
+    // An aria live message representing the currently focused option in the select.
+    const focusedOptionMsg =
+      focusedOption && menuIsOpen
+        ? optionFocusAriaMessage({
+            focusedOption,
+            getOptionLabel: this.getOptionLabel,
+            options,
+          })
+        : '';
+    // An aria live message representing the set of focusable results and current searchterm/inputvalue.
+    const resultsMsg = resultsAriaMessage({
+      inputValue,
+      screenReaderMessage: screenReaderStatus({ count: this.countOptions() }),
+    });
+
+    return `${focusedValueMsg} ${focusedOptionMsg} ${resultsMsg} ${ariaLiveContext}`;
+  }
+
   renderInput() {
     const {
       isDisabled,
@@ -1701,43 +1430,17 @@ export default class Select<
       inputValue,
       tabIndex,
       form,
-      menuIsOpen,
-      required,
     } = this.props;
-    const { Input } = this.getComponents();
-    const { inputIsHidden, ariaSelection } = this.state;
-    const { commonProps } = this;
+    const { Input } = this.components;
+    const { inputIsHidden } = this.state;
 
     const id = inputId || this.getElementId('input');
 
     // aria attributes makes the JSX "noisy", separated for clarity
     const ariaAttributes = {
-      'aria-autocomplete': 'list' as const,
-      'aria-expanded': menuIsOpen,
-      'aria-haspopup': true,
-      'aria-errormessage': this.props['aria-errormessage'],
-      'aria-invalid': this.props['aria-invalid'],
+      'aria-autocomplete': 'list',
       'aria-label': this.props['aria-label'],
       'aria-labelledby': this.props['aria-labelledby'],
-      'aria-required': required,
-      role: 'combobox',
-      'aria-activedescendant': this.isAppleDevice
-        ? undefined
-        : this.state.focusedOptionId || '',
-
-      ...(menuIsOpen && {
-        'aria-controls': this.getElementId('listbox'),
-      }),
-      ...(!isSearchable && {
-        'aria-readonly': true,
-      }),
-      ...(this.hasValue()
-        ? ariaSelection?.action === 'initial-input-focus' && {
-            'aria-describedby': this.getElementId('live-region'),
-          }
-        : {
-            'aria-describedby': this.getElementId('placeholder'),
-          }),
     };
 
     if (!isSearchable) {
@@ -1749,9 +1452,9 @@ export default class Select<
           onBlur={this.onInputBlur}
           onChange={noop}
           onFocus={this.onInputFocus}
+          readOnly
           disabled={isDisabled}
           tabIndex={tabIndex}
-          inputMode="none"
           form={form}
           value=""
           {...ariaAttributes}
@@ -1759,12 +1462,15 @@ export default class Select<
       );
     }
 
+    const { cx, theme, selectProps } = this.commonProps;
+
     return (
       <Input
-        {...commonProps}
         autoCapitalize="none"
         autoComplete="off"
         autoCorrect="off"
+        cx={cx}
+        getStyles={this.getStyles}
         id={id}
         innerRef={this.getInputRef}
         isDisabled={isDisabled}
@@ -1772,16 +1478,18 @@ export default class Select<
         onBlur={this.onInputBlur}
         onChange={this.handleInputChange}
         onFocus={this.onInputFocus}
+        selectProps={selectProps}
         spellCheck="false"
         tabIndex={tabIndex}
         form={form}
+        theme={theme}
         type="text"
         value={inputValue}
         {...ariaAttributes}
       />
     );
   }
-  renderPlaceholderOrValue() {
+  renderPlaceholderOrValue(): ?PlaceholderOrValue {
     const {
       MultiValue,
       MultiValueContainer,
@@ -1789,7 +1497,7 @@ export default class Select<
       MultiValueRemove,
       SingleValue,
       Placeholder,
-    } = this.getComponents();
+    } = this.components;
     const { commonProps } = this;
     const {
       controlShouldRenderValue,
@@ -1807,7 +1515,6 @@ export default class Select<
           key="placeholder"
           isDisabled={isDisabled}
           isFocused={isFocused}
-          innerProps={{ id: this.getElementId('placeholder') }}
         >
           {placeholder}
         </Placeholder>
@@ -1815,9 +1522,8 @@ export default class Select<
     }
 
     if (isMulti) {
-      return selectValue.map((opt, index) => {
+      const selectValues: Array<any> = selectValue.map((opt, index) => {
         const isOptionFocused = opt === focusedValue;
-        const key = `${this.getOptionLabel(opt)}-${this.getOptionValue(opt)}`;
 
         return (
           <MultiValue
@@ -1829,13 +1535,14 @@ export default class Select<
             }}
             isFocused={isOptionFocused}
             isDisabled={isDisabled}
-            key={key}
+            key={this.getOptionValue(opt)}
             index={index}
             removeProps={{
               onClick: () => this.removeValue(opt),
               onTouchEnd: () => this.removeValue(opt),
-              onMouseDown: (e) => {
+              onMouseDown: e => {
                 e.preventDefault();
+                e.stopPropagation();
               },
             }}
             data={opt}
@@ -1844,6 +1551,7 @@ export default class Select<
           </MultiValue>
         );
       });
+      return selectValues;
     }
 
     if (inputValue) {
@@ -1858,7 +1566,7 @@ export default class Select<
     );
   }
   renderClearIndicator() {
-    const { ClearIndicator } = this.getComponents();
+    const { ClearIndicator } = this.components;
     const { commonProps } = this;
     const { isDisabled, isLoading } = this.props;
     const { isFocused } = this.state;
@@ -1888,7 +1596,7 @@ export default class Select<
     );
   }
   renderLoadingIndicator() {
-    const { LoadingIndicator } = this.getComponents();
+    const { LoadingIndicator } = this.components;
     const { commonProps } = this;
     const { isDisabled, isLoading } = this.props;
     const { isFocused } = this.state;
@@ -1906,7 +1614,7 @@ export default class Select<
     );
   }
   renderIndicatorSeparator() {
-    const { DropdownIndicator, IndicatorSeparator } = this.getComponents();
+    const { DropdownIndicator, IndicatorSeparator } = this.components;
 
     // separator doesn't make sense without the dropdown indicator
     if (!DropdownIndicator || !IndicatorSeparator) return null;
@@ -1924,7 +1632,7 @@ export default class Select<
     );
   }
   renderDropdownIndicator() {
-    const { DropdownIndicator } = this.getComponents();
+    const { DropdownIndicator } = this.components;
     if (!DropdownIndicator) return null;
     const { commonProps } = this;
     const { isDisabled } = this.props;
@@ -1955,9 +1663,9 @@ export default class Select<
       LoadingMessage,
       NoOptionsMessage,
       Option,
-    } = this.getComponents();
+    } = this.components;
     const { commonProps } = this;
-    const { focusedOption } = this.state;
+    const { focusedOption, menuOptions } = this.state;
     const {
       captureMenuScroll,
       inputValue,
@@ -1979,70 +1687,55 @@ export default class Select<
     if (!menuIsOpen) return null;
 
     // TODO: Internal Option Type here
-    const render = (props: CategorizedOption<Option>, id: string) => {
-      const { type, data, isDisabled, isSelected, label, value } = props;
-      const isFocused = focusedOption === data;
-      const onHover = isDisabled ? undefined : () => this.onOptionHover(data);
-      const onSelect = isDisabled ? undefined : () => this.selectOption(data);
-      const optionId = `${this.getElementId('option')}-${id}`;
-      const innerProps = {
-        id: optionId,
-        onClick: onSelect,
-        onMouseMove: onHover,
-        onMouseOver: onHover,
-        tabIndex: -1,
-        role: 'option',
-        'aria-selected': this.isAppleDevice ? undefined : isSelected, // is not supported on Apple devices
-      };
+    const render = (props: OptionType) => {
+      // for performance, the menu options in state aren't changed when the
+      // focused option changes so we calculate additional props based on that
+      const isFocused = focusedOption === props.data;
+      props.innerRef = isFocused ? this.getFocusedOptionRef : undefined;
 
       return (
-        <Option
-          {...commonProps}
-          innerProps={innerProps}
-          data={data}
-          isDisabled={isDisabled}
-          isSelected={isSelected}
-          key={optionId}
-          label={label}
-          type={type}
-          value={value}
-          isFocused={isFocused}
-          innerRef={isFocused ? this.getFocusedOptionRef : undefined}
-        >
+        <Option {...commonProps} {...props} isFocused={isFocused}>
           {this.formatOptionLabel(props.data, 'menu')}
         </Option>
       );
     };
 
-    let menuUI: ReactNode;
+    const renderGroup = (props: GroupType) => {
+      const { type, ...group } = props;
+      const headingId = `${props.key}-heading`;
+      return (
+        <Group
+          {...commonProps}
+          {...group}
+          Heading={GroupHeading}
+          innerProps={{
+            'aria-expanded': true,
+            'aria-labelledby': headingId,
+            role: 'group',
+          }}
+          headingProps={{
+            id: headingId,
+          }}
+          label={this.formatGroupLabel(props.data)}
+        >
+          {props
+            .options
+            .map(option => (option.type === 'group' )
+              ? (renderGroup(option))
+              : (render(option)))
+          }
+        </Group>
+      );
+    };
+
+    let menuUI;
 
     if (this.hasOptions()) {
-      menuUI = this.getCategorizedOptions().map((item) => {
+      menuUI = menuOptions.render.map(item => {
         if (item.type === 'group') {
-          const { data, options, index: groupIndex } = item;
-          const groupId = `${this.getElementId('group')}-${groupIndex}`;
-          const headingId = `${groupId}-heading`;
-
-          return (
-            <Group
-              {...commonProps}
-              key={groupId}
-              data={data}
-              options={options}
-              Heading={GroupHeading}
-              headingProps={{
-                id: headingId,
-                data: item.data,
-              }}
-              label={this.formatGroupLabel(item.data)}
-            >
-              {item.options.map((option) =>
-                render(option, `${groupIndex}-${option.index}`)
-              )}
-            </Group>
-          );
+          return renderGroup(item);
         } else if (item.type === 'option') {
-          return render(item, `${item.index}`);
+          return render(item);
         }
       });
     } else if (isLoading) {
@@ -2076,32 +1769,22 @@ export default class Select<
             isLoading={isLoading}
             placement={placement}
           >
-            <ScrollManager
-              captureEnabled={captureMenuScroll}
+            <ScrollCaptor
+              isEnabled={captureMenuScroll}
               onTopArrive={onMenuScrollToTop}
               onBottomArrive={onMenuScrollToBottom}
-              lockEnabled={menuShouldBlockScroll}
             >
-              {(scrollTargetRef) => (
+              <ScrollBlock isEnabled={menuShouldBlockScroll}>
                 <MenuList
                   {...commonProps}
-                  innerRef={(instance) => {
-                    this.getMenuListRef(instance);
-                    scrollTargetRef(instance);
-                  }}
-                  innerProps={{
-                    role: 'listbox',
-                    'aria-multiselectable': commonProps.isMulti,
-                    id: this.getElementId('listbox'),
-                  }}
+                  innerRef={this.getMenuListRef}
                   isLoading={isLoading}
                   maxHeight={maxHeight}
-                  focusedOption={focusedOption}
                 >
                   {menuUI}
                 </MenuList>
-              )}
-            </ScrollManager>
+              </ScrollBlock>
+            </ScrollCaptor>
           </Menu>
         )}
       </MenuPlacer>
@@ -2125,19 +1808,15 @@ export default class Select<
     );
   }
   renderFormField() {
-    const { delimiter, isDisabled, isMulti, name, required } = this.props;
+    const { delimiter, isDisabled, isMulti, name } = this.props;
     const { selectValue } = this.state;
-
-    if (required && !this.hasValue() && !isDisabled) {
-      return <RequiredInput name={name} onFocus={this.onValueInputFocus} />;
-    }
 
     if (!name || isDisabled) return;
 
     if (isMulti) {
       if (delimiter) {
         const value = selectValue
-          .map((opt) => this.getOptionValue(opt))
+          .map(opt => this.getOptionValue(opt))
           .join(delimiter);
         return <input name={name} type="hidden" value={value} />;
       } else {
@@ -2152,7 +1831,7 @@ export default class Select<
               />
             ))
           ) : (
-            <input name={name} type="hidden" value="" />
+            <input name={name} type="hidden" />
           );
 
         return <div>{input}</div>;
@@ -2164,35 +1843,22 @@ export default class Select<
   }
 
   renderLiveRegion() {
-    const { commonProps } = this;
-    const {
-      ariaSelection,
-      focusedOption,
-      focusedValue,
-      isFocused,
-      selectValue,
-    } = this.state;
-
-    const focusableOptions = this.getFocusableOptions();
-
+    if (!this.state.isFocused) return null;
     return (
-      <LiveRegion
-        {...commonProps}
-        id={this.getElementId('live-region')}
-        ariaSelection={ariaSelection}
-        focusedOption={focusedOption}
-        focusedValue={focusedValue}
-        isFocused={isFocused}
-        selectValue={selectValue}
-        focusableOptions={focusableOptions}
-        isAppleDevice={this.isAppleDevice}
-      />
+      <A11yText aria-live="polite">
+        <span id="aria-selection-event">&nbsp;{this.state.ariaLiveSelection}</span>
+        <span id="aria-context">&nbsp;{this.constructAriaLiveMessage()}</span>
+      </A11yText>
     );
   }
 
   render() {
-    const { Control, IndicatorsContainer, SelectContainer, ValueContainer } =
-      this.getComponents();
+    const {
+      Control,
+      IndicatorsContainer,
+      SelectContainer,
+      ValueContainer,
+    } = this.components;
 
     const { className, id, isDisabled, menuIsOpen } = this.props;
     const { isFocused } = this.state;
@@ -2238,9 +1904,3 @@ export default class Select<
     );
   }
 }
-
-export type PublicBaseSelectProps<
-  Option,
-  IsMulti extends boolean,
-  Group extends GroupBase<Option>
-> = JSX.LibraryManagedAttributes<typeof Select, Props<Option, IsMulti, Group>>;
